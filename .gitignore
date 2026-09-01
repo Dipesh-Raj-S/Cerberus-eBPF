@@ -1,0 +1,19 @@
+# Build output
+build/
+
+# Generated kernel headers
+headers/vmlinux.h
+
+# Object files
+*.o
+
+# Executables
+cerberus_agent
+
+# Editor files
+.vscode/
+.idea/
+
+# Temporary files
+*.swp
+*~
