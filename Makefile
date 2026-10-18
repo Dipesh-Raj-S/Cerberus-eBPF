@@ -1,4 +1,5 @@
 APP = cerberus_agent
+
 BPF_OBJ = ips_core.bpf.o
 SKEL = ips_core.skel.h
 
@@ -23,7 +24,7 @@ build/$(SKEL): build/$(BPF_OBJ)
 	$(BPFTOOL) gen skeleton build/$(BPF_OBJ) > build/$(SKEL)
 
 build/$(APP): src/ips_agent.cpp build/$(SKEL) src/common.h
-	$(CC) $(CFLAGS) -Isrc -Ibuild src/ips_agent.cpp -lbpf -lelf -o build/$(APP)
+	$(CC) $(CFLAGS) -Isrc -Ibuild src/ips_agent.cpp -lbpf -lelf -lz -o build/$(APP)
 
 clean:
-	rm -rf build headers
+	rm -rf build headers/vmlinux.h
