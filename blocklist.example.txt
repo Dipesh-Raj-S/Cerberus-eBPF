@@ -1,0 +1,42 @@
+# Cerberus policy file
+#
+# Directives:
+#
+#   mode monitor    report matching access only (default)
+#   mode enforce    deny matching access with -EPERM
+#
+#   name <file>     match a file name anywhere on the filesystem
+#   path <path>     match the parent-directory/file-name pair
+#                   (the last two components of the path)
+#
+#   proc <comm> <target>     deny one process access to target
+#   uid <uid> <target>       deny one uid access to target
+#
+#   sandbox <comm>           allowlist-only mode for a process;
+#                            an empty allowlist denies all opens
+#   allow <comm> <target>    allow a sandboxed process a target
+#
+# <target> is either a plain file name or a path containing '/'.
+#
+# Lines starting with '#' are ignored.
+
+mode monitor
+
+# Example name rule: any file called sensitive.txt
+# name sensitive.txt
+
+# Example path rule: a sensitive.txt inside a directory
+# named secrets, anywhere on the filesystem
+# path /var/secrets/sensitive.txt
+
+# Example process rule: bash may not read the shadow file
+# proc bash /etc/shadow
+
+# Example uid rule: uid 1000 may not read the shadow file
+# uid 1000 /etc/shadow
+
+# Example sandbox: the "backup" tool may only read its config.
+# Static binaries work best, because a strict sandbox also
+# blocks the dynamic loader's file opens.
+# sandbox backup
+# allow backup /etc/backup.conf
