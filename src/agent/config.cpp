@@ -6,6 +6,8 @@
 #include <string>
 
 #include "cerberus/common.h"
+#include "detection.h"
+#include "net_policy.h"
 #include "policy.h"
 #include "util.h"
 
@@ -23,6 +25,23 @@
  *     uid <uid> <path-or-name>
  *     sandbox <comm>
  *     allow <comm> <path-or-name>
+ *
+ * Network directives (Phase 5), kept separate from the
+ * file-access directives above:
+ *
+ *     net-mode monitor | enforce | deny-all
+ *     block-domain <domain>
+ *     allow-domain <domain>
+ *     block-ip <ip>
+ *     allow-ip <ip>
+ *     block-suspicious on | off
+ *     net-dns-port on | off
+ *     add-shellwatch <comm>
+ *
+ * net-mode deny-all is honored here because a config file
+ * is explicit human intent; the CLI requires a separate
+ * confirmation step instead. A warning is printed either
+ * way.
  */
 int config_load(
     const std::string& path,
@@ -72,6 +91,140 @@ int config_load(
                     << "[-] " << path << ":" << lineno
                     << ": unknown mode '" << value << "'\n";
             }
+
+            continue;
+        }
+
+        /*
+         * Network directives (Phase 5).
+         */
+        if (directive == "net-mode")
+        {
+            if (value == "monitor")
+            {
+                net_mode_set(maps, CERBERUS_NET_MODE_MONITOR);
+            }
+            else if (value == "enforce")
+            {
+                net_mode_set(maps, CERBERUS_NET_MODE_ENFORCE);
+            }
+            else if (value == "deny-all")
+            {
+                std::cerr
+                    << "[!] " << path << ":" << lineno
+                    << ": net-mode deny-all is enabled from the config "
+                    << "file. This blocks every outgoing connection "
+                    << "except allow rules, port 53 (while the exemption "
+                    << "is on), and loopback/link-local/multicast.\n";
+
+                net_mode_set(maps, CERBERUS_NET_MODE_DENY_ALL);
+
+                loaded++;
+            }
+            else
+            {
+                std::cerr
+                    << "[-] " << path << ":" << lineno
+                    << ": unknown net-mode '" << value << "'\n";
+            }
+
+            continue;
+        }
+
+        if (directive == "block-domain" ||
+            directive == "allow-domain")
+        {
+            if (value.empty())
+            {
+                std::cerr
+                    << "[-] " << path << ":" << lineno
+                    << ": expected a domain name\n";
+
+                continue;
+            }
+
+            if (net_add_domain_rule(
+                    maps,
+                    value,
+                    directive == "block-domain"
+                        ? CERBERUS_NET_RULE_DOMAIN_BLOCK
+                        : CERBERUS_NET_RULE_DOMAIN_ALLOW))
+                loaded++;
+
+            continue;
+        }
+
+        if (directive == "block-ip" ||
+            directive == "allow-ip")
+        {
+            if (value.empty())
+            {
+                std::cerr
+                    << "[-] " << path << ":" << lineno
+                    << ": expected an IP address\n";
+
+                continue;
+            }
+
+            if (net_add_ip_rule(
+                    maps,
+                    value,
+                    directive == "block-ip"
+                        ? CERBERUS_NET_RULE_IP_BLOCK
+                        : CERBERUS_NET_RULE_IP_ALLOW))
+                loaded++;
+
+            continue;
+        }
+
+        if (directive == "block-suspicious")
+        {
+            if (value == "on" || value == "off")
+            {
+                detection_set_block(maps, value == "on");
+
+                net_flag_toggle(
+                    maps,
+                    CERBERUS_NETF_BLOCK_SUSPICIOUS,
+                    value == "on");
+
+                loaded++;
+            }
+            else
+            {
+                std::cerr
+                    << "[-] " << path << ":" << lineno
+                    << ": expected 'on' or 'off'\n";
+            }
+
+            continue;
+        }
+
+        if (directive == "net-dns-port")
+        {
+            if (value == "on" || value == "off")
+            {
+                net_flag_toggle(
+                    maps,
+                    CERBERUS_NETF_ALLOW_DNS_PORT,
+                    value == "on");
+
+                loaded++;
+            }
+            else
+            {
+                std::cerr
+                    << "[-] " << path << ":" << lineno
+                    << ": expected 'on' or 'off'\n";
+            }
+
+            continue;
+        }
+
+        if (directive == "add-shellwatch")
+        {
+            if (detection_add_shell(value))
+                loaded++;
 
             continue;
         }

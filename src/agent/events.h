@@ -21,6 +21,14 @@ void events_stop();
  */
 int events_poll(int timeout_ms);
 
+/*
+ * Total events received and rendered (file + network).
+ */
 unsigned long long events_count();
+
+/*
+ * Network connect events received and rendered.
+ */
+unsigned long long events_net_count();
 
 #endif /* CERBERUS_AGENT_EVENTS_H */

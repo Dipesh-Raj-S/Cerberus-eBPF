@@ -11,6 +11,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include <bpf/bpf_endian.h>
 
 #include "cerberus/common.h"
 
@@ -30,6 +31,9 @@
 #include "rules.bpf.h"
 
 #include "hooks/file_open.bpf.h"
+#include "hooks/socket_connect.bpf.h"
+#include "hooks/dns_capture.bpf.h"
+#include "hooks/exec.bpf.h"
 
 
 char LICENSE[] SEC("license") = "GPL";

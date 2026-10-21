@@ -15,7 +15,10 @@
 #include "cerberus/common.h"
 #include "cli.h"
 #include "config.h"
+#include "detection.h"
+#include "dns.h"
 #include "events.h"
+#include "net_policy.h"
 #include "policy.h"
 
 
@@ -86,11 +89,26 @@ int main(int argc, char **argv)
     /*
      * Monitor-only by default, so a
      * misconfigured rule can never lock
-     * the whole system.
+     * the whole system. The same applies
+     * to the network policy: monitor mode,
+     * with the port-53 exemption armed for
+     * an opt-in deny-all.
      */
     policy_set_mode(
         maps.policy.mode_fd,
         CERBERUS_MODE_MONITOR);
+
+    net_mode_set(
+        maps.policy,
+        CERBERUS_NET_MODE_MONITOR);
+
+    net_flags_set(
+        maps.policy,
+        CERBERUS_NETF_ALLOW_DNS_PORT);
+
+    detection_init(maps.policy);
+
+    dns_init(maps.policy);
 
 
     /*
@@ -105,6 +123,14 @@ int main(int argc, char **argv)
 
         return 1;
     }
+
+
+    /*
+     * Attach the TC DNS sniffer on every up,
+     * non-loopback interface. Failure degrades
+     * domain coverage but never file protection.
+     */
+    dns_capture_attach(bpf_runtime_skel());
 
 
     /*
@@ -138,14 +164,23 @@ int main(int argc, char **argv)
 
 
     unsigned char mode = policy_get_mode(maps.policy.mode_fd);
+    unsigned char netmode = net_mode_get(maps.policy);
 
     std::cout
         << "\n[+] Cerberus BPF IPS is ACTIVE.\n"
-        << "[+] Mode: "
+        << "[+] File mode: "
         << (mode == CERBERUS_MODE_ENFORCE ? "ENFORCE" : "MONITOR")
         << (mode == CERBERUS_MODE_ENFORCE
             ? " (matching access is denied)\n"
             : " (matching access is only reported)\n")
+        << "[+] Network mode: "
+        << (netmode == CERBERUS_NET_MODE_ENFORCE ? "ENFORCE"
+            : netmode == CERBERUS_NET_MODE_DENY_ALL ? "DENY_ALL"
+            : "MONITOR")
+        << " (outgoing connections are monitored"
+        << (netmode == CERBERUS_NET_MODE_MONITOR
+            ? ")\n"
+            : " and matching rules deny connect())\n")
         << "[+] Type 'help' for commands.\n\n";
 
     cli_print_prompt();
@@ -177,6 +212,12 @@ int main(int argc, char **argv)
 
         if (cli_process_pending(maps.policy) == cli_result::quit)
             break;
+
+        /*
+         * Periodic DNS work: TTL purge and decision
+         * re-sweep. Internally paced at 5 s.
+         */
+        dns_tick();
     }
 
 
@@ -186,6 +227,7 @@ int main(int argc, char **argv)
         << "\n";
 
 
+    dns_capture_stop();
     events_stop();
     bpf_runtime_stop();
 

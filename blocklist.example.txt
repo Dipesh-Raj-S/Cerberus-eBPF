@@ -40,3 +40,42 @@ mode monitor
 # blocks the dynamic loader's file opens.
 # sandbox backup
 # allow backup /etc/backup.conf
+
+# ----------------------------------------------------------------
+# Network policy (Phase 5)
+#
+#   net-mode monitor | enforce | deny-all
+#   block-domain <domain>     deny domain (+ subdomains), enforced
+#                             on addresses observed in plaintext
+#                             DNS answers
+#   allow-domain <domain>     permit domain (+ subdomains), honored
+#                             under deny-all
+#   block-ip <ip>             deny one address (IPv4 or IPv6)
+#   allow-ip <ip>             permit one address under deny-all
+#   block-suspicious on|off   kernel-side denial for watched shell
+#                             processes to unmapped destinations
+#                             (default off; alerts are report-only)
+#   net-dns-port on|off       port-53 exemption in deny-all
+#                             (default on)
+#   add-shellwatch <comm>     extend the reverse-shell watch list
+#
+# DNS-based domain rules are only as complete as plaintext
+# UDP-53 visibility: DoH, DoT and resolver caches are not
+# mirrored. Direct-IP connections carry no domain context and
+# are logged, not guessed. Shared hosting IPs are flagged in
+# the alerts instead of being silently collateralized.
+#
+# deny-all via the config file is explicit human intent and
+# takes effect directly with a printed warning; from the
+# interactive CLI it requires a confirmation step.
+# ----------------------------------------------------------------
+
+net-mode monitor
+
+# block-domain evil.example.test
+# allow-domain tools.example.test
+# block-ip 203.0.113.66
+# allow-ip 198.51.100.3
+# add-shellwatch nc
+# block-suspicious off
+

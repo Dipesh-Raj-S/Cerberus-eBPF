@@ -114,21 +114,29 @@ cerberus/
 │   │   ├── helpers.bpf.h     events + rule key builders
 │   │   ├── rules.bpf.h       rule/sandbox matching logic
 │   │   └── hooks/
-│   │       └── file_open.bpf.h
+│   │       ├── file_open.bpf.h      LSM file access
+│   │       ├── socket_connect.bpf.h LSM outgoing connects
+│   │       ├── dns_capture.bpf.h    TC DNS sniffer
+│   │       └── exec.bpf.h           LSM exec tracker
 │   │
 │   └── agent/                user-space agent
 │       ├── main.cpp          lifecycle, signals, main loop
 │       ├── bpf_loader.{h,cpp} skeleton load/attach + map FDs
 │       ├── policy.{h,cpp}    rule codec + map operations
+│       ├── net_policy.{h,cpp} network rules + verdict logic
+│       ├── dns.{h,cpp}       DNS capture + associations
+│       ├── detection.{h,cpp} reverse-shell heuristics
 │       ├── config.{h,cpp}    policy file parsing
 │       ├── events.{h,cpp}    ring buffer + alert output
 │       ├── cli.{h,cpp}       interactive commands/status
 │       └── util.h            shared text helpers
 │
 ├── tests/
+│   ├── test_units.sh         unprivileged unit tests
 │   ├── test_cli.sh
 │   ├── test_phase35.sh
-│   └── test_phase4.sh
+│   ├── test_phase4.sh
+│   └── test_phase5.sh        network integration test (root)
 │
 ├── blocklist.example.txt
 ├── Makefile
@@ -985,6 +993,235 @@ allowlisting, monitor-mode reporting and list output.
 
 ---
 
+# ✅ Phase 5 — Network Security
+
+Completed.
+
+Cerberus now watches and controls **outgoing network
+connections** in addition to file access. Network policy
+lives in its own map set, its own mode variable and its
+own CLI/config section; the file-access policy is
+untouched.
+
+### Architecture
+
+Three BPF programs handle the network side:
+
+```text
+lsm/socket_connect          every connect() attempt
+        │ verdict: allow / report / deny (-EPERM)
+        ▼
+net_event   ──── ring buffer ────►  agent (alerts)
+
+tc (dns_sniff)              plaintext DNS responses
+        │ only QR=1, UDP port 53
+        ▼
+dns_event   ──── ring buffer ────►  agent parses A/AAAA
+                                    ► domain ↔ address map
+                                    (TTL-driven expiry)
+                                    ► writes net_ip_decisions
+
+lsm/bprm_creds_for_exec     records recent execs (5 s LRU)
+        │                    used as reverse-shell evidence
+        ▼
+exec_recent map
+```
+
+The connect hook consults, in order:
+
+```text
+1. net_ip_rules       explicit IP rules (never expire)
+2. net_ip_decisions   per-address verdicts precomputed by
+                      the agent from observed DNS answers
+3. mode defaults      monitor: never deny
+                      enforce: deny rule matches
+                      deny-all: deny unless allowed
+```
+
+Domain blocking is **suffix-based**: a `block-domain
+example.com` rule covers `mail.example.com` too, but
+`block-domain mail.example.com` does NOT cover
+`example.com`. When both a block and an allow rule match
+the same address the **deny wins** and the event is
+flagged `shared-host`, so an IP that serves more than one
+domain never silently damages the other domains.
+
+### Network Modes
+
+```text
+cerberus> network-mode monitor    report only (default)
+cerberus> network-mode enforce    rule matches deny connect()
+cerberus> network-mode deny-all   opt-in default-deny
+```
+
+`deny-all` blocks every outgoing connection except:
+
+- explicit allow rules (`allow-domain`, `allow-ip`),
+- destination port 53 while the exemption is on
+  (`net-dns-port on`, default),
+- loopback, link-local and multicast traffic.
+
+It is never enabled automatically. From the CLI it needs
+a separate confirmation step:
+
+```text
+cerberus> network-mode deny-all
+[!] WARNING: deny-all blocks EVERY outgoing connection ...
+    Type 'network-mode deny-all confirm' to enable.
+
+cerberus> network-mode deny-all confirm
+```
+
+Recovery: `network-mode monitor` (or `enforce`) — or
+remove the `net-mode deny-all` line from the config file
+and restart.
+
+### Rule commands
+
+```text
+block-domain <domain>      deny domain (+ subdomains)
+unblock-domain <domain>    remove the block rule
+allow-domain <domain>      permit domain (+ subdomains)
+remove-allow-domain <d>    remove the allow rule
+block-ip <ip>              deny one address (v4 and v6)
+unblock-ip <ip>            remove the IP block rule
+allow-ip <ip>              permit one address
+remove-allow-ip <ip>       remove the IP allow rule
+list-domains               list domain and IP rules
+list-network               full network state + DNS cache
+```
+
+A denied connect produces:
+
+```text
+[NET BLOCKED]      14:02:11 | PID: 5001 | UID: 1000 | Process: curl
+ | Dest: 203.0.113.7:80/tcp | Match: block-domain evil.test
+ | via: www.evil.test
+```
+
+A monitor-mode event for a rule match says:
+`(would deny in enforce mode)`. **A network event only
+says "blocked" when connect() really returns -EPERM** —
+in monitor mode nothing is blocked, only reported.
+
+### Reverse-shell heuristics
+
+Watched process names (defaults include bash, sh, python,
+node, nc, socat, ...) are correlated with:
+
+```text
+unmapped-destination   no DNS association for the target
+recent-exec            the process exec'd < 5 s ago
+suspect-port           4444/4445/5555/1337/31337
+repeated               ≥3 connects to one target in 10 s
+```
+
+```text
+[NET SUSPICIOUS]    PID: 9001 | Process: bash
+ | Dest: 203.0.113.9:4444/tcp
+ | reasons: shell-process, unmapped-destination, suspect-port(4444)
+ | (heuristic; report-only unless net-block-suspicious is on)
+```
+
+Report-only by default. The kernel only ever denies on
+this heuristic when the administrator turns on
+`block-suspicious` **and** the mode is not `monitor`:
+
+```text
+add-shellwatch <comm>       track one more process name
+rm-shellwatch <comm>        stop tracking one
+list-shellwatch             show the watch list
+block-suspicious on|off     authorizes kernel-side denial
+```
+
+With `block-suspicious on`, a watched process connecting
+to an address with no domain information is denied with
+-EPERM and reported as `[SUSPICIOUS BLOCKED]`.
+
+### Config file directives
+
+```text
+net-mode monitor | enforce | deny-all
+block-domain <domain>
+allow-domain <domain>
+block-ip <ip>
+allow-ip <ip>
+block-suspicious on | off
+net-dns-port on | off
+add-shellwatch <comm>
+```
+
+`net-mode deny-all` in a config file is honored directly
+(an editor writing a policy file is explicit human
+intent) with a printed warning; via the CLI it still
+requires the confirmation step.
+
+### Status output
+
+`status` now shows the network mode, flags, network event
+count, DNS associations parsed and suspicious alerts:
+
+```text
+Network mode: ENFORCE
+Network flags: dns-port-exempt
+DNS responses parsed: 12 (4 live associations)
+Suspicious alerts: 1
+```
+
+### Limitations (read before relying on this)
+
+- **DNS visibility**: domain blocking only sees plaintext
+  UDP DNS on port 53 crossing a non-loopback interface.
+  DoH, DoT, TCP-53 responses, systemd-resolved cache hits
+  (answers served without packets leaving lo), /etc/hosts
+  entries and long-lived applications that already resolved
+  the name before Cerberus started are **not** mirrored
+  into the decision map.
+- **Direct IP connections** have no domain context; in
+  enforce mode they are allowed and logged as
+  `no matching rule (destination domain unknown)`. A
+  malware family that hardcodes IPs defeats domain rules —
+  use `block-ip` for those ranges, or deny-all.
+- **Shared IPs** (CDNs, shared hosting): blocking domain A
+  necessarily blocks every other domain that resolves to
+  the same address. Cerberus flags such matches
+  (`shared IP; deny wins over allow`) instead of hiding
+  them, and the per-address TTL is driven by the observed
+  answers.
+- **Port-53 exemption in deny-all** is required for DNS
+  to keep working; port 53 is also a classic exfiltration
+  channel. `net-dns-port off` closes the hole (and breaks
+  name resolution).
+- **Event rate limiting**: above 64 events/PID/second the
+  reporting is throttled; the next printed event carries
+  the suppressed count. Enforcement is never throttled.
+- **IPv6 extension headers, VLAN double-tags** beyond one
+  802.1Q/QinQ tag, and fragmented DNS packets are skipped.
+- **Domains longer than 63 characters** are not
+  associated (storage limit of the map entries).
+
+### Integration Test
+
+```bash
+sudo tests/test_phase5.sh
+```
+
+spins up an isolated network namespace with a veth pair
+and a dnsmasq fixture (created **before** the agent, since
+TC attachments happen at startup), then covers monitoring,
+IP/domain rules, subdomain matching, TTL expiry and
+refresh, no shared-IP collateral, deny-all and its
+exemptions, suspicious alerts and kernel-side suspicious
+blocking, event rate limiting, and the config-file
+directives. Unit tests for the domain/IP logic run
+without root:
+
+```bash
+bash tests/test_units.sh
+```
+
+---
+
 # 🔮 Planned Future Features
 
 Potential development stages:
@@ -997,31 +1234,19 @@ Implemented in Phase 3 — BPF hash maps with runtime rules, monitor/enforce mod
 
 Implemented in Phase 4 — process-scoped rules, UID-scoped rules and sandbox allowlists.
 
-### 🔹 Network Protection
+### ✅ Network Protection
 
-Monitor and prevent suspicious network activity.
+Implemented in Phase 5 — connection monitoring via
+`lsm/socket_connect`, plaintext-DNS-capture-driven domain
+blocking, explicit IP rules and an opt-in
+default-deny mode.
 
-Possible targets:
+### ✅ Reverse Shell Detection
 
-```text
-connect()
-send()
-execve()
-```
-
-### 🔹 Reverse Shell Detection
-
-Detect suspicious combinations such as:
-
-```text
-Shell Process
-        +
-Network Connection
-        +
-Suspicious Execution
-        ↓
-Potential Reverse Shell
-```
+Implemented in Phase 5 — heuristic correlation of shell
+process names, unmapped destinations, recent executions,
+suspect ports and repeated connects; report-only unless
+`block-suspicious` is enabled explicitly.
 
 ### 🔹 Security Policy Engine
 
@@ -1070,8 +1295,10 @@ Process-Based Security Policies
 (process rules, uid rules, sandbox allowlists)
         │
         ▼
-PHASE 5
-Network Security Monitoring
+PHASE 5 ✅
+Network Security
+(connect monitoring, domain blocking via DNS capture,
+IP rules, opt-in default-deny, reverse-shell heuristics)
         │
         ▼
 PHASE 6
@@ -1100,8 +1327,8 @@ Known limitations include:
 * Rules are loaded from the config file only at startup; there is no live reload yet.
 * No persistent event logging yet.
 * No centralized configuration.
-* No network protection yet.
-* No advanced attack correlation yet.
+* Network domain blocking depends on plaintext UDP DNS on port 53; DoH, DoT, TCP-53, cached resolver answers and `/etc/hosts` entries are invisible to it — see the Phase 5 limitations list.
+* Reverse-shell detection is heuristic and report-only by default; it is evidence, not proof.
 
 These limitations are intentional next development areas.
 
@@ -1210,8 +1437,12 @@ to:
 │ File Access Blocking      ✅        │
 │ Dynamic Policies          ✅        │
 │ Process / UID Rules       ✅        │
-│ Advanced Detection        🔜        │
+│ Network Monitoring        ✅        │
+│ Dynamic Domain Blocking   ✅        │
+│ Default-Deny (opt-in)     ✅        │
+│ Reverse-Shell Heuristics  ✅        │
 │ Dashboard                 🔜        │
+│ Persistent Event Logging  🔜        │
 │                                     │
 └─────────────────────────────────────┘
 ```

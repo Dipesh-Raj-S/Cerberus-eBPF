@@ -23,6 +23,16 @@ struct policy_maps {
     int allow_fd;    /* allowlist          */
     int sandbox_fd;  /* sandboxed          */
     int mode_fd;     /* policy_mode        */
+
+    /*
+     * Network maps (Phase 5). Owned by the modules in
+     * net_policy.h / dns.h / detection.h.
+     */
+    int net_mode_fd;          /* net_policy_mode    */
+    int net_flags_fd;         /* net_flags          */
+    int net_ip_rules_fd;      /* net_ip_rules       */
+    int net_ip_decisions_fd;  /* net_ip_decisions   */
+    int shell_block_fd;       /* shell_block        */
 };
 
 

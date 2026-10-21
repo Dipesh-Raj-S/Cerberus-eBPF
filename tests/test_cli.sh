@@ -75,7 +75,20 @@ cleanup() {
         wait "$AGENT_PID" 2>/dev/null
     fi
 
-    rm -rf "$WORK" "$FIFO" "$LOG"
+    #
+    # Preserve the agent log when the run failed so the
+    # failure is diagnosable afterwards.
+    #
+    if [ "${fail:-0}" -gt 0 ]; then
+        echo
+        echo "--- agent log tail ($LOG) ---"
+
+        tail -n 40 "$LOG" 2>/dev/null || echo "(no log)"
+
+        echo "--- end diagnostics ---"
+    else
+        rm -rf "$WORK" "$FIFO" "$LOG"
+    fi
 }
 
 trap cleanup EXIT
