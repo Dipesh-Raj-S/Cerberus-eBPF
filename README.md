@@ -103,11 +103,34 @@ cerberus/
 ├── headers/
 │   └── vmlinux.h
 │
-├── src/
-│   ├── common.h
-│   ├── ips_agent.cpp
-│   └── ips_core.bpf.c
+├── include/
+│   └── cerberus/
+│       └── common.h          shared kernel/user ABI
 │
+├── src/
+│   ├── bpf/                  kernel-side eBPF
+│   │   ├── ips_core.bpf.c    single BPF translation unit
+│   │   ├── maps.bpf.h        map definitions
+│   │   ├── helpers.bpf.h     events + rule key builders
+│   │   ├── rules.bpf.h       rule/sandbox matching logic
+│   │   └── hooks/
+│   │       └── file_open.bpf.h
+│   │
+│   └── agent/                user-space agent
+│       ├── main.cpp          lifecycle, signals, main loop
+│       ├── bpf_loader.{h,cpp} skeleton load/attach + map FDs
+│       ├── policy.{h,cpp}    rule codec + map operations
+│       ├── config.{h,cpp}    policy file parsing
+│       ├── events.{h,cpp}    ring buffer + alert output
+│       ├── cli.{h,cpp}       interactive commands/status
+│       └── util.h            shared text helpers
+│
+├── tests/
+│   ├── test_cli.sh
+│   ├── test_phase35.sh
+│   └── test_phase4.sh
+│
+├── blocklist.example.txt
 ├── Makefile
 ├── .gitignore
 └── README.md
@@ -115,9 +138,49 @@ cerberus/
 
 ---
 
+# 🧩 Module Architecture
+
+The codebase is split by responsibility rather than by
+file size, and the split preserves the single BPF
+translation unit that owns all maps.
+
+```text
+                        USER SPACE
+┌──────────────────────────────────────────────────┐
+│  main.cpp        lifecycle, signals, event loop  │
+│      │                                           │
+│      ├── bpf_loader   skeleton, attach, map FDs  │
+│      ├── config       policy-file parsing        │
+│      ├── cli          command parsing/dispatch   │
+│      ├── events       ring buffer + alerts       │
+│      └── policy       rules + mode + rule views  │
+│                                 (all share util) │
+└───────────────────────▲──────────────────────────┘
+                        │ ring buffer
+┌───────────────────────┴──────────────────────────┐
+│  BPF translation unit: src/bpf/ips_core.bpf.c    │
+│      ├── maps.bpf.h       all map definitions    │
+│      ├── helpers.bpf.h    emit_event, key build  │
+│      ├── rules.bpf.h      deny/sandbox checks    │
+│      └── hooks/file_open.bpf.h                   │
+└──────────────────────────────────────────────────┘
+```
+
+The BPF object stays a single compilation unit so every
+hook program shares the same maps and ring buffer; the
+files are split by responsibility, not by object file.
+
+To add a hook, create `src/bpf/hooks/<name>.bpf.h`
+with its `SEC(...)` program, include it from
+`ips_core.bpf.c`, and expose any new maps through
+`src/agent/bpf_loader.cpp`. No map pinning or map-in-map
+indirection is needed.
+
+---
+
 # 🧩 Components
 
-## 1️⃣ `common.h`
+## 1️⃣ `include/cerberus/common.h`
 
 This file contains structures shared between:
 
@@ -128,9 +191,13 @@ Current event structure:
 
 ```c
 struct event {
-    int pid;
+    unsigned int pid;
+    unsigned int uid;
+    unsigned char denied;    /* 1 = blocked, 0 = monitor-only */
+    unsigned char rule_type; /* NAME or PATH rule      */
+    unsigned char evt_type;  /* FILE_OPEN (future: NET) */
     char comm[16];
-    char filename[256];
+    char rule[256];          /* matched rule key        */
 };
 ```
 
@@ -156,11 +223,20 @@ struct event
 
 # 2️⃣ eBPF Kernel Program
 
-File:
+Files:
 
 ```text
-src/ips_core.bpf.c
+src/bpf/ips_core.bpf.c      entry translation unit
+src/bpf/maps.bpf.h          all maps
+src/bpf/helpers.bpf.h       events + key builders
+src/bpf/rules.bpf.h         rule/sandbox matching
+src/bpf/hooks/file_open.bpf.h
 ```
+
+The `lsm/file_open` hook lives in
+`src/bpf/hooks/file_open.bpf.h`; the other files are
+included by the single translation unit so all hooks
+share the same maps.
 
 This is the core security enforcement component.
 
@@ -199,30 +275,40 @@ Continue      Return -EPERM
 
 # 🛡️ Current Blocking Implementation
 
-The current prototype checks whether the file name begins with:
+Rules are stored in a **BPF hash map** and can be changed at runtime without recompiling the eBPF program.
+
+Two kinds of rules are supported:
 
 ```text
-sensitive
+NAME rule
+    "sensitive.txt"
+
+    Matches that file name anywhere on the filesystem.
+
+PATH rule
+    "secrets/sensitive.txt"
+
+    Matches that parent-directory / file-name pair
+    anywhere on the filesystem.
+
+    Stored as the last two components of the path.
 ```
 
-For example:
+Because file names can never contain `/`, the two rule shapes can share one map without ambiguity.
+
+Cerberus runs in one of two modes, selected at runtime:
 
 ```text
-sensitive.txt
+MONITOR   -> report matching access, never deny  (default)
+ENFORCE   -> report matching access and return -EPERM
 ```
 
-When such a file is accessed:
+The mode is a value in a BPF array map (`policy_mode`), so switching between observing and preventing does **not** require reloading the program.
 
-```text
-cat /tmp/sensitive.txt
-```
-
-Cerberus intercepts the operation through the BPF LSM hook.
-
-The eBPF program then returns:
+When a rule matches, the eBPF program returns:
 
 ```c
-return -EPERM;
+return -EPERM;   /* ENFORCE mode */
 ```
 
 `EPERM` means:
@@ -278,20 +364,26 @@ Display alert
 Example output:
 
 ```text
-[BLOCKED INTRUSION]
-PID: 1234
-Process: cat
-Protected Target: sensitive.txt
+[BLOCKED INTRUSION] PID: 1234 | UID: 1000 | Process: cat | Target: /tmp/sensitive.txt
+[MONITOR ALERT]     PID: 1235 | UID: 1000 | Process: vim | Target: sensitive.txt
 ```
+
+`BLOCKED INTRUSION` means the operation was denied.
+`MONITOR ALERT` means the operation was reported but allowed.
 
 ---
 
 # 🖥️ User-Space Agent
 
-File:
+Files:
 
 ```text
-src/ips_agent.cpp
+src/agent/main.cpp        lifecycle, signals, main loop
+src/agent/bpf_loader.*    skeleton load/attach, map FDs
+src/agent/policy.*        rule codec, map operations, mode
+src/agent/config.*        policy file loading
+src/agent/events.*        ring buffer consumer + alerts
+src/agent/cli.*           interactive commands and status
 ```
 
 The user-space agent is responsible for:
@@ -301,6 +393,7 @@ The user-space agent is responsible for:
 * Connecting to the Ring Buffer
 * Receiving security events
 * Displaying blocked activity
+* Managing rules and policy mode
 
 The agent uses the automatically generated BPF skeleton.
 
@@ -347,17 +440,17 @@ ips_core_bpf__attach();
 Pipeline:
 
 ```text
-ips_core.bpf.c
+src/bpf/ips_core.bpf.c
         ↓
 Clang
         ↓
-ips_core.bpf.o
+build/ips_core.bpf.o
         ↓
 bpftool
         ↓
-ips_core.skel.h
+build/ips_core.skel.h
         ↓
-C++ Agent
+src/agent/*.cpp
 ```
 
 ---
@@ -389,7 +482,7 @@ headers/vmlinux.h
         ↓
 ────────────────────────────
 
-src/ips_core.bpf.c
+src/bpf/ips_core.bpf.c
         ↓
 clang -target bpf
         ↓
@@ -403,7 +496,7 @@ build/ips_core.skel.h
         ↓
 ────────────────────────────
 
-src/ips_agent.cpp
+src/agent/*.cpp
         ↓
 g++
         ↓
@@ -448,24 +541,70 @@ Run the agent with root privileges:
 sudo ./build/cerberus_agent
 ```
 
+Optionally, pass a policy file as the first argument:
+
+```bash
+sudo ./build/cerberus_agent /etc/cerberus/blocklist.txt
+```
+
+Without an argument, the agent tries to load `blocklist.txt` from the working directory.
+
 Expected output:
 
 ```text
-Cerberus IPS Enforcer Active. Running in BLOCKING mode...
+[+] Loaded 2 rule(s) from blocklist.txt
+
+[+] Cerberus BPF IPS is ACTIVE.
+[+] Mode: MONITOR (matching access is only reported)
+[+] Type 'help' for commands.
+
+cerberus>
 ```
 
 Keep this terminal running.
+
+### Interactive CLI
+
+The `cerberus>` prompt is displayed as soon as the BPF
+program is active, before any input is typed:
+
+```text
+cerberus> help
+cerberus> addpath /tmp/sensitive.txt
+cerberus> mode enforce
+cerberus> status
+cerberus> quit
+```
+
+Commands never block event delivery. A pasted batch of
+commands is processed line by line, and commands can also
+be piped into the agent. `quit`, `exit`, or Ctrl-C stop
+the agent and detach the LSM hook.
+
+### CLI Test
+
+```bash
+sudo tests/test_cli.sh
+```
+
+covers immediate prompt display, batched command
+processing, enforcement from the CLI, and clean exit.
 
 ---
 
 # 🧪 Testing Active Prevention
 
-Open another terminal.
-
-Create a protected test file if necessary:
+Create a protected test file:
 
 ```bash
 touch /tmp/sensitive.txt
+```
+
+Tell Cerberus to protect it, and switch to blocking mode:
+
+```text
+cerberus> addpath /tmp/sensitive.txt
+cerberus> mode enforce
 ```
 
 Then attempt to access it:
@@ -481,6 +620,18 @@ cat: /tmp/sensitive.txt: Operation not permitted
 ```
 
 This confirms that Cerberus successfully intercepted and blocked the operation.
+
+Switching back to safe observation:
+
+```text
+cerberus> mode monitor
+```
+
+```bash
+cat /tmp/sensitive.txt
+```
+
+now succeeds, while the agent reports a `MONITOR ALERT`.
 
 ---
 
@@ -642,47 +793,21 @@ Operation not permitted
 
 ---
 
-# 🔜 Next Development Steps
+# ✅ Phase 3 — Dynamic Blocklist Using BPF Hash Maps
 
-## Phase 3 — Dynamic Blocklist Using BPF Hash Maps
+Completed.
 
-### Current Problem
-
-Currently, the security rule is hardcoded:
-
-```text
-if filename starts with "sensitive"
-```
-
-This means changing the policy requires:
-
-```text
-Change C code
-        ↓
-Recompile
-        ↓
-Reload BPF program
-```
-
-That is not practical for a real IPS.
-
----
-
-### Solution
-
-Introduce a BPF Hash Map.
-
-Architecture:
+The security policy lives in a **BPF hash map** and is managed at runtime:
 
 ```text
 User Space Agent
         │
-        │ Add / Remove Rules
+        │ Add / Remove Rules (CLI or config file)
         ▼
 ┌──────────────────────┐
 │    BPF Hash Map      │
 │                      │
-│  Blocked Targets     │
+│  NAME + PATH rules   │
 └──────────┬───────────┘
            │
            ▼
@@ -696,10 +821,167 @@ User Space Agent
     Match     No Match
       │         │
       ▼         ▼
-    BLOCK     ALLOW
+  REPORT /    ALLOW
+  ENFORCE
 ```
 
-This will allow security policies to change dynamically without recompiling the eBPF program.
+No recompilation or reload is needed to change the policy.
+
+---
+
+# ✅ Phase 3.5 — Production-Grade Rule Handling
+
+Completed.
+
+### Monitor vs Enforce Mode
+
+Cerberus is **monitor-only by default**. Matching access is reported to the agent but never denied until the mode is switched:
+
+```text
+mode monitor    -> observe; safe default
+mode enforce    -> matching access returns -EPERM
+```
+
+The mode lives in a BPF array map, so it changes instantly at runtime.
+
+### Policy File
+
+Rules can be loaded from a config file at startup (default: `blocklist.txt` in the working directory, or pass another path as the first argument):
+
+```text
+# policy file format
+mode monitor
+name sensitive.txt
+path /tmp/sensitive.txt
+```
+
+See `blocklist.example.txt`.
+
+### Interactive Commands
+
+```text
+add <name>          add a file name rule
+addpath <path>      add a parent/file path rule
+remove <name>       remove a file name rule
+rmpath <path>       remove a path rule
+list                list all loaded rules
+mode <m>            switch policy mode (monitor|enforce)
+status              show mode and counters
+help                show the help text
+quit                stop Cerberus
+```
+
+### Clean Shutdown
+
+The agent handles `SIGINT` / `SIGTERM`, detaches the BPF LSM program, and reports a summary:
+
+```text
+[+] Cerberus stopped. Events received: 42
+```
+
+### Integration Test
+
+```bash
+sudo tests/test_phase35.sh
+```
+
+covers config loading, both modes, runtime rule changes, ring buffer alerts and clean shutdown.
+
+---
+
+# ✅ Phase 4 — Process-Based Security Policies
+
+Completed.
+
+Rules can now be scoped to **who** performs the access, not just **what** is accessed.
+
+### Rule Model
+
+```text
+GLOBAL rule       any process  -> target
+PROCESS rule      comm         -> target
+UID rule          uid          -> target
+SANDBOX           comm         -> allowlist only
+```
+
+Precedence inside the LSM hook:
+
+```text
+1. Sandbox check
+       if the process is sandboxed:
+           allow if the target is allowlisted
+           otherwise default-deny
+
+2. Global rules
+3. Process-scoped rules
+4. UID-scoped rules
+```
+
+All rule types respect the global monitor/enforce mode.
+
+### Scoped Rules
+
+```text
+cerberus> addproc bash /etc/shadow
+[+] Scoped rule added: proc bash -> path /etc/shadow
+
+cerberus> adduid 1000 shadow
+[+] Scoped rule added: uid 1000 -> name shadow
+```
+
+`addproc bash /etc/shadow` denies only `bash`; `grep`, `cat`, ... still work.
+`adduid 1000 shadow` denies every process running as uid 1000.
+
+Targets containing `/` are PATH rules; plain names are
+NAME rules.
+
+### Sandbox Mode
+
+```text
+cerberus> sandbox static-tool
+cerberus> allow static-tool /etc/static-tool.conf
+```
+
+A sandboxed process may only open allowlisted targets.
+An empty allowlist denies every open by that process.
+
+> ⚠️ A strict sandbox also denies the dynamic loader's
+> own opens, so dynamically linked programs cannot start
+> unless their loader and libraries are allowlisted.
+> Use static binaries, or allowlist the loader paths.
+
+### Policy File
+
+```text
+mode enforce
+proc cat secret.txt
+uid 1000 shadow
+sandbox static-tool
+allow static-tool /etc/static-tool.conf
+```
+
+### Interactive Commands
+
+```text
+addproc <comm> <target>   deny process access to target
+rmproc <comm> <target>    remove a process rule
+adduid <uid> <target>     deny uid access to target
+rmuid <uid> <target>      remove a uid rule
+sandbox <comm>            allowlist-only mode for process
+unsandbox <comm>          disable sandbox for process
+allow <comm> <target>     allow sandboxed process a target
+unallow <comm> <target>   remove an allowlist entry
+list                      list rules, allowlist and sandboxes
+```
+
+### Integration Test
+
+```bash
+sudo tests/test_phase4.sh
+```
+
+covers process rules, uid rules, sandbox default-deny,
+allowlisting, monitor-mode reporting and list output.
 
 ---
 
@@ -707,25 +989,13 @@ This will allow security policies to change dynamically without recompiling the 
 
 Potential development stages:
 
-### 🔹 Dynamic File Blocklist
+### ✅ Dynamic File Blocklist
 
-Use BPF Hash Maps for runtime policy management.
+Implemented in Phase 3 — BPF hash maps with runtime rules, monitor/enforce mode and policy files.
 
-### 🔹 Process-Based Rules
+### ✅ Process-Based Rules
 
-Block or allow specific processes.
-
-Example:
-
-```text
-Unknown Process
-        ↓
-Attempts Sensitive File Access
-        ↓
-Cerberus
-        ↓
-BLOCK
-```
+Implemented in Phase 4 — process-scoped rules, UID-scoped rules and sandbox allowlists.
 
 ### 🔹 Network Protection
 
@@ -790,12 +1060,14 @@ PHASE 2 ✅
 BPF LSM Active Prevention
         │
         ▼
-PHASE 3 🔜
+PHASE 3 ✅
 Dynamic Blocklist using BPF Maps
+(rules, monitor/enforce mode, policy file)
         │
         ▼
-PHASE 4
+PHASE 4 ✅
 Process-Based Security Policies
+(process rules, uid rules, sandbox allowlists)
         │
         ▼
 PHASE 5
@@ -822,8 +1094,10 @@ The current implementation is a prototype.
 
 Known limitations include:
 
-* Filename matching is currently hardcoded.
-* The current implementation checks the filename rather than maintaining a complete dynamic policy system.
+* PATH rules only match the last two path components (parent directory + file name), not the full absolute path.
+* Process rules match the process `comm` name, which the process itself controls; they are not a hard boundary against a malicious privileged user.
+* A strict sandbox also blocks the dynamic loader's own file opens; allowlist loader/library paths or use static binaries.
+* Rules are loaded from the config file only at startup; there is no live reload yet.
 * No persistent event logging yet.
 * No centralized configuration.
 * No network protection yet.
@@ -934,7 +1208,8 @@ to:
 │ User-Space Agent          ✅        │
 │ BPF LSM Enabled           ✅        │
 │ File Access Blocking      ✅        │
-│ Dynamic Policies          🔜        │
+│ Dynamic Policies          ✅        │
+│ Process / UID Rules       ✅        │
 │ Advanced Detection        🔜        │
 │ Dashboard                 🔜        │
 │                                     │
