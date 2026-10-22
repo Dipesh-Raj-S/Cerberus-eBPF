@@ -84,6 +84,42 @@ int config_load(
             continue;
         }
 
+        if (directive == "net-mode")
+        {
+            if (value == "monitor")
+            {
+                policy_net_set_mode(maps.net_mode_fd, CERBERUS_MODE_MONITOR);
+            }
+            else if (value == "enforce")
+            {
+                policy_net_set_mode(maps.net_mode_fd, CERBERUS_MODE_ENFORCE);
+            }
+            else
+            {
+                std::cerr
+                    << "[-] " << path << ":" << lineno
+                    << ": unknown net mode '" << value << "'\n";
+            }
+
+            continue;
+        }
+
+        if (directive == "net-block")
+        {
+            if (policy_net_add_block(maps, value))
+                loaded++;
+
+            continue;
+        }
+
+        if (directive == "net-allow")
+        {
+            if (policy_net_add_allow(maps, value))
+                loaded++;
+
+            continue;
+        }
+
         char rule[256] = {};
 
         if (directive == "name")

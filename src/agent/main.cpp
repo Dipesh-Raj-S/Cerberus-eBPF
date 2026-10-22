@@ -92,6 +92,14 @@ int main(int argc, char **argv)
         maps.policy.mode_fd,
         CERBERUS_MODE_MONITOR);
 
+    /*
+     * The network policy starts independently in
+     * monitor-only mode as well.
+     */
+    policy_net_set_mode(
+        maps.policy.net_mode_fd,
+        CERBERUS_MODE_MONITOR);
+
 
     /*
      * Create the Ring Buffer.
@@ -138,6 +146,7 @@ int main(int argc, char **argv)
 
 
     unsigned char mode = policy_get_mode(maps.policy.mode_fd);
+    unsigned char net_mode = policy_net_get_mode(maps.policy.net_mode_fd);
 
     std::cout
         << "\n[+] Cerberus BPF IPS is ACTIVE.\n"
@@ -146,6 +155,11 @@ int main(int argc, char **argv)
         << (mode == CERBERUS_MODE_ENFORCE
             ? " (matching access is denied)\n"
             : " (matching access is only reported)\n")
+        << "[+] Net mode: "
+        << (net_mode == CERBERUS_MODE_ENFORCE ? "ENFORCE" : "MONITOR")
+        << (net_mode == CERBERUS_MODE_ENFORCE
+            ? " (blocked IPs are denied)\n"
+            : " (IP rule matches are only reported)\n")
         << "[+] Type 'help' for commands.\n\n";
 
     cli_print_prompt();

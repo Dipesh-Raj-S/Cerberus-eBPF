@@ -2,12 +2,12 @@
 #
 # Directives:
 #
-#   mode monitor    report matching access only (default)
-#   mode enforce    deny matching access with -EPERM
+#   mode monitor     report matching access only (default)
+#   mode enforce     deny matching access with -EPERM
 #
-#   name <file>     match a file name anywhere on the filesystem
-#   path <path>     match the parent-directory/file-name pair
-#                   (the last two components of the path)
+#   name <file>      match a file name anywhere on the filesystem
+#   path <path>      match the parent-directory/file-name pair
+#                    (the last two components of the path)
 #
 #   proc <comm> <target>     deny one process access to target
 #   uid <uid> <target>       deny one uid access to target
@@ -15,6 +15,16 @@
 #   sandbox <comm>           allowlist-only mode for a process;
 #                            an empty allowlist denies all opens
 #   allow <comm> <target>    allow a sandboxed process a target
+#
+#   net-mode monitor|enforce network policy mode (separate
+#                            from the file-access mode)
+#   net-block <ip>           block outgoing connections to an
+#                            IPv4 or IPv6 address
+#   net-allow <ip>           explicitly allow connections to an
+#                            IPv4 or IPv6 address
+#
+# IP policy precedence: block rule > allow rule > default
+# (allowed). Unlisted addresses are never denied.
 #
 # <target> is either a plain file name or a path containing '/'.
 #
@@ -40,3 +50,9 @@ mode monitor
 # blocks the dynamic loader's file opens.
 # sandbox backup
 # allow backup /etc/backup.conf
+
+# Example network rules: block outgoing connections to
+# these addresses (net-mode decides report vs deny).
+# net-mode enforce
+# net-block 192.0.2.10
+# net-block 2001:db8::1

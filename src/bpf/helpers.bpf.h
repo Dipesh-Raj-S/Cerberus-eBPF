@@ -67,6 +67,71 @@ static __always_inline void emit_event(
 
 
 /*
+ * Report an outgoing connection attempt to user space.
+ *
+ * "addr" is the 16-byte destination address buffer;
+ * for IPv4 the first 4 bytes hold the address in
+ * network byte order and the rest are zero.
+ */
+static __always_inline void emit_net_event(
+    const unsigned char *addr,
+    unsigned char family,
+    unsigned char protocol,
+    unsigned short port,
+    int verdict,
+    int matched_block,
+    int matched_allow)
+{
+    struct net_event *e;
+
+    e = bpf_ringbuf_reserve(
+        &rb,
+        sizeof(*e),
+        0
+    );
+
+    if (!e)
+        return;
+
+    e->ts = bpf_ktime_get_ns();
+
+    e->pid =
+        bpf_get_current_pid_tgid() >> 32;
+
+    e->uid =
+        bpf_get_current_uid_gid();
+
+    e->verdict =
+        (unsigned char)verdict;
+
+    e->family = family;
+    e->protocol = protocol;
+    e->reserved = 0;
+
+    e->matched_block =
+        matched_block ? 1 : 0;
+
+    e->matched_allow =
+        matched_allow ? 1 : 0;
+
+    e->port = port;
+
+    bpf_get_current_comm(
+        &e->comm,
+        sizeof(e->comm)
+    );
+
+    __builtin_memcpy(
+        e->addr,
+        addr,
+        sizeof(e->addr)
+    );
+
+    bpf_ringbuf_submit(e, 0);
+}
+
+
+/*
  * Build a PATH rule key in the fixed slot layout:
  *
  *     [0 .. 63]   parent directory name

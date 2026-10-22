@@ -62,6 +62,39 @@ struct scoped_rule_key {
  * Event types sent through the ring buffer.
  */
 #define CERBERUS_EVT_FILE_OPEN 1
+#define CERBERUS_EVT_NET_CONNECT 2
+
+
+/*
+ * Address family and protocol constants used by
+ * network events. Duplicated here because
+ * <netinet/in.h> cannot be included by the BPF
+ * translation unit.
+ */
+#define CERBERUS_AF_INET 2
+#define CERBERUS_AF_INET6 10
+#define CERBERUS_IPPROTO_TCP 6
+#define CERBERUS_IPPROTO_UDP 17
+
+/*
+ * Verdicts for CERBERUS_EVT_NET_CONNECT events.
+ *
+ *   ALLOWED          no matching rule blocked it; the
+ *                    connection was allowed (kernel
+ *                    actually let it proceed).
+ *
+ *   DENIED           enforce mode matched a block rule
+ *                    and returned -EPERM; the kernel
+ *                    truly denied the connection.
+ *
+ *   BLOCKED_MONITOR  a block rule matched, but monitor
+ *                    mode reported the match without
+ *                    denying (what would have been
+ *                    blocked).
+ */
+#define CERBERUS_NET_VERDICT_ALLOWED 0
+#define CERBERUS_NET_VERDICT_DENIED 1
+#define CERBERUS_NET_VERDICT_BLOCKED_MONITOR 2
 
 
 /*
@@ -90,6 +123,29 @@ struct event {
     unsigned char reserved;
     char comm[16];
     char rule[256];          /* matched rule key (slot layout for path rules) */
+};
+
+/*
+ * Network event structure, sent through the same ring
+ * buffer as struct event and also interpreted identically
+ * by both sides.
+ *
+ * Record size distinguishes the two shapes in user space
+ * (sizeof(struct event) != sizeof(struct net_event)).
+ */
+struct net_event {
+    unsigned long long ts;   /* bpf_ktime_get_ns            */
+    unsigned int pid;
+    unsigned int uid;
+    unsigned char verdict;   /* CERBERUS_NET_VERDICT_*      */
+    unsigned char family;    /* CERBERUS_AF_*               */
+    unsigned char protocol;  /* CERBERUS_IPPROTO_*          */
+    unsigned char reserved;
+    unsigned char matched_block;
+    unsigned char matched_allow;
+    unsigned short port;     /* network byte order          */
+    char comm[16];
+    unsigned char addr[16];  /* v4: first 4 bytes, v6: all  */
 };
 
 #endif
