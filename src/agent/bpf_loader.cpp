@@ -60,6 +60,21 @@ bool bpf_runtime_start(bpf_maps& maps)
     maps.policy.mode_fd =
         bpf_map__fd(g_skel->maps.policy_mode);
 
+    maps.policy.net_block4_fd =
+        bpf_map__fd(g_skel->maps.net_block4);
+
+    maps.policy.net_block6_fd =
+        bpf_map__fd(g_skel->maps.net_block6);
+
+    maps.policy.net_allow4_fd =
+        bpf_map__fd(g_skel->maps.net_allow4);
+
+    maps.policy.net_allow6_fd =
+        bpf_map__fd(g_skel->maps.net_allow6);
+
+    maps.policy.net_mode_fd =
+        bpf_map__fd(g_skel->maps.net_mode);
+
     maps.ringbuf_fd =
         bpf_map__fd(g_skel->maps.rb);
 
@@ -68,7 +83,12 @@ bool bpf_runtime_start(bpf_maps& maps)
         maps.policy.scoped_fd < 0 ||
         maps.policy.allow_fd < 0 ||
         maps.policy.sandbox_fd < 0 ||
-        maps.policy.mode_fd < 0)
+        maps.policy.mode_fd < 0 ||
+        maps.policy.net_block4_fd < 0 ||
+        maps.policy.net_block6_fd < 0 ||
+        maps.policy.net_allow4_fd < 0 ||
+        maps.policy.net_allow6_fd < 0 ||
+        maps.policy.net_mode_fd < 0)
     {
         std::cerr
             << "[-] Failed to get BPF map FDs.\n";

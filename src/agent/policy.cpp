@@ -9,6 +9,8 @@
 #include <bpf/bpf.h>
 
 #include "cerberus/common.h"
+#include "policy_net.h"
+#include "util.h"
 
 
 bool policy_parse_uid(
@@ -578,36 +580,6 @@ unsigned char policy_get_mode(int mode_fd)
 }
 
 
-static unsigned int count_map_entries(int fd, size_t key_size)
-{
-    char key[512] = {};
-    char next_key[512] = {};
-
-    bool first = true;
-    unsigned int count = 0;
-
-    while (
-        bpf_map_get_next_key(
-            fd,
-            first ? nullptr : key,
-            next_key
-        ) == 0)
-    {
-        first = false;
-
-        std::memcpy(
-            key,
-            next_key,
-            key_size
-        );
-
-        count++;
-    }
-
-    return count;
-}
-
-
 unsigned int policy_count_global(const policy_maps& maps)
 {
     return count_map_entries(maps.rules_fd, 256);
@@ -817,6 +789,11 @@ void policy_list(const policy_maps& maps)
 
     if (!found)
         std::cout << "[EMPTY] No sandboxed processes\n";
+
+    std::cout
+        << "---------- network IP rules ---------\n";
+
+    policy_net_list(maps);
 
     std::cout
         << "====================================\n\n";

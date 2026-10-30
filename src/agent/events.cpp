@@ -9,6 +9,7 @@
 
 #include "cerberus/common.h"
 #include "cli.h"
+#include "net_events.h"
 #include "policy.h"
 
 
@@ -26,13 +27,28 @@ static int handle_event(
     void *data,
     size_t data_sz)
 {
+    g_event_count++;
+
+    /*
+     * Records come through one shared ring buffer;
+     * the record size distinguishes file events
+     * (struct event) from network events
+     * (struct net_event).
+     */
+    if (data_sz == sizeof(struct net_event))
+    {
+        print_net_event(
+            static_cast<const struct net_event *>(data)
+        );
+
+        return 0;
+    }
+
     const struct event *e =
         static_cast<const struct event *>(data);
 
     if (data_sz < sizeof(*e))
         return 0;
-
-    g_event_count++;
 
     std::string target;
 

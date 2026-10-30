@@ -30,6 +30,7 @@
 #include "rules.bpf.h"
 
 #include "hooks/file_open.bpf.h"
+#include "hooks/socket_connect.bpf.h"
 
 
 char LICENSE[] SEC("license") = "GPL";

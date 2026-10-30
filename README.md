@@ -114,7 +114,8 @@ cerberus/
 │   │   ├── helpers.bpf.h     events + rule key builders
 │   │   ├── rules.bpf.h       rule/sandbox matching logic
 │   │   └── hooks/
-│   │       └── file_open.bpf.h
+│   │       ├── file_open.bpf.h
+│   │       └── socket_connect.bpf.h
 │   │
 │   └── agent/                user-space agent
 │       ├── main.cpp          lifecycle, signals, main loop
@@ -128,7 +129,8 @@ cerberus/
 ├── tests/
 │   ├── test_cli.sh
 │   ├── test_phase35.sh
-│   └── test_phase4.sh
+│   ├── test_phase4.sh
+│   └── test_net.sh
 │
 ├── blocklist.example.txt
 ├── Makefile
@@ -985,6 +987,101 @@ allowlisting, monitor-mode reporting and list output.
 
 ---
 
+# ✅ Phase 5 (revised) — IP-Based Network Security
+
+Completed.
+
+After a first attempt at DNS-based blocking proved too
+complex, network security was rebuilt from the Phase 4
+baseline as simple, reliable IP-based policy.
+
+The eBPF program now also attaches to:
+
+```c
+SEC("lsm/socket_connect")
+```
+
+This means Cerberus inspects every outgoing connection
+attempt (TCP `connect()` and connected UDP sockets)
+through the same BPF LSM mechanism as file access.
+
+### What is captured
+
+Every outgoing IPv4/IPv6 connection attempt produces a
+network event through the same ring buffer:
+
+```text
+[NET CONNECT BLOCKED] PID:   1234 | UID:     0 | Process: curl | Target: 192.0.2.10:80 (tcp)
+[NET WOULD BLOCK   ] PID:   1235 | UID:  1000 | Process: nc   | Target: 192.0.2.10:9999 (tcp)
+[NET OUTBOUND      ] PID:   1235 | UID:  1000 | Process: curl | Target: 198.51.100.7:443 (tcp)
+```
+
+Events carry timestamp, PID, UID, process name,
+destination address and port, protocol, which IP policy
+matched, and the verdict.
+
+### IP Rules and Precedence
+
+Rules are exact IPv4 or IPv6 addresses stored in BPF
+hash maps, changed at runtime without reloading:
+
+```text
+1. block rule   -> deny in enforce mode
+2. allow rule   -> allow
+3. no rule      -> allow (no default-deny)
+```
+
+Precedence is deterministic: an address that is both
+blocked and allowed is always **blocked**. The agent
+prints a warning when both kinds of rules exist for the
+same IP.
+
+### Mode Separation
+
+The network policy has its own mode, independent of the
+file-access mode:
+
+```text
+net-mode monitor -> IP rule matches are reported only
+net-mode enforce -> blocked IPs return -EPERM to the caller
+```
+
+A blocked connection is reported as `NET CONNECT BLOCKED`
+only when the kernel actually denied it. Monitor mode
+never denies anything and shows `NET WOULD BLOCK` for
+matches instead.
+
+### Interactive Commands
+
+```text
+block-ip <ip>          block outgoing connections to IP
+unblock-ip <ip>        remove an IP block rule
+allow-ip <ip>          explicitly allow connections to an IP
+remove-allow-ip <ip>   remove an IP allow rule
+net-mode <m>           monitor|enforce for network policy only
+```
+
+### Policy File
+
+```text
+net-mode enforce
+net-block 192.0.2.10
+net-allow 2001:db8::1
+```
+
+### Integration Test
+
+```bash
+sudo tests/test_net.sh
+```
+
+runs every connection inside an isolated network
+namespace and covers validation, add/remove/list,
+monitor vs enforce, conflicting rules, runtime updates,
+event delivery and file-access coexistence.
+
+---
+
 # 🔮 Planned Future Features
 
 Potential development stages:
@@ -996,6 +1093,10 @@ Implemented in Phase 3 — BPF hash maps with runtime rules, monitor/enforce mod
 ### ✅ Process-Based Rules
 
 Implemented in Phase 4 — process-scoped rules, UID-scoped rules and sandbox allowlists.
+
+### ✅ IP-Based Network Protection
+
+Implemented in Phase 5 (revised) — `lsm/socket_connect` hook, IPv4/IPv6 block and allow maps, separate network monitor/enforce mode.
 
 ### 🔹 Network Protection
 
@@ -1100,7 +1201,8 @@ Known limitations include:
 * Rules are loaded from the config file only at startup; there is no live reload yet.
 * No persistent event logging yet.
 * No centralized configuration.
-* No network protection yet.
+* IP network rules match exact addresses only (no subnets or CIDR ranges); only outbound `connect()` is covered, not UDP `sendto()` without a prior connect.
+* Unlisted destination IPs are always allowed (no default-deny networking, by design).
 * No advanced attack correlation yet.
 
 These limitations are intentional next development areas.
@@ -1210,6 +1312,7 @@ to:
 │ File Access Blocking      ✅        │
 │ Dynamic Policies          ✅        │
 │ Process / UID Rules       ✅        │
+│ IP Network Blocking       ✅        │
 │ Advanced Detection        🔜        │
 │ Dashboard                 🔜        │
 │                                     │

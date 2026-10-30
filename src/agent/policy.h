@@ -23,6 +23,11 @@ struct policy_maps {
     int allow_fd;    /* allowlist          */
     int sandbox_fd;  /* sandboxed          */
     int mode_fd;     /* policy_mode        */
+    int net_block4_fd; /* net_block4       */
+    int net_block6_fd; /* net_block6       */
+    int net_allow4_fd; /* net_allow4       */
+    int net_allow6_fd; /* net_allow6       */
+    int net_mode_fd;   /* net_mode         */
 };
 
 

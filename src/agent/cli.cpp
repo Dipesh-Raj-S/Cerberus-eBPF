@@ -9,7 +9,9 @@
 
 #include "cerberus/common.h"
 #include "events.h"
+#include "net_cli.h"
 #include "policy.h"
+#include "policy_net.h"
 #include "util.h"
 
 
@@ -29,6 +31,11 @@ static void print_help()
         << "  unsandbox <comm>          disable sandbox for process\n"
         << "  allow <comm> <target>     allow sandboxed process a target\n"
         << "  unallow <comm> <target>   remove an allowlist entry\n"
+        << "  block-ip <ip>             block connections to an IPv4/IPv6 address\n"
+        << "  unblock-ip <ip>           remove an IP block rule\n"
+        << "  allow-ip <ip>             explicitly allow connections to an IP\n"
+        << "  remove-allow-ip <ip>      remove an IP allow rule\n"
+        << "  net-mode <m>              monitor|enforce for network policy only\n"
         << "  list                      list all rules and sandboxes\n"
         << "  mode <m>                  monitor|enforce\n"
         << "  status                    show mode and counters\n"
@@ -40,11 +47,15 @@ static void print_help()
 static void print_status(const policy_maps& maps)
 {
     unsigned char mode = policy_get_mode(maps.mode_fd);
+    unsigned char net_mode = policy_net_get_mode(maps.net_mode_fd);
 
     std::cout
         << "\n---------- CERBERUS STATUS ----------\n"
         << "Mode: "
         << (mode == CERBERUS_MODE_ENFORCE ? "ENFORCE" : "MONITOR")
+        << "\n"
+        << "Net mode: "
+        << (net_mode == CERBERUS_MODE_ENFORCE ? "ENFORCE" : "MONITOR")
         << "\n"
         << "Events received: "
         << events_count()
@@ -60,6 +71,12 @@ static void print_status(const policy_maps& maps)
         << "\n"
         << "Sandboxed processes: "
         << policy_count_sandboxed(maps)
+        << "\n"
+        << "IP block rules: "
+        << policy_net_count_blocks(maps)
+        << "\n"
+        << "IP allow rules: "
+        << policy_net_count_allows(maps)
         << "\n"
         << "-------------------------------------\n\n";
 }
@@ -419,6 +436,13 @@ static cli_result handle_command(
             policy_add_allow(maps, comm, rule);
         else
             policy_remove_allow(maps, comm, rule);
+    }
+    else if (net_cli_command(maps, command))
+    {
+        /*
+         * A network policy command; the network CLI
+         * module handled it and printed the response.
+         */
     }
     else if (command.rfind("addpath ", 0) == 0)
     {

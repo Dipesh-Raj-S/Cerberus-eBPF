@@ -90,6 +90,55 @@ struct {
 
 
 /*
+ * Destination IP rules for outgoing connections,
+ * IPv4 keys in network byte order.
+ *
+ * Value is a presence marker; block and allow rules
+ * live in separate maps so lookups decide precedence.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, __u8);
+} net_block4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u8[16]);
+    __type(value, __u8);
+} net_block6 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, __u8);
+} net_allow4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u8[16]);
+    __type(value, __u8);
+} net_allow6 SEC(".maps");
+
+
+/*
+ * Network policy mode, separate from policy_mode so
+ * file-access and network policies can operate in
+ * different modes.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u8);
+} net_mode SEC(".maps");
+
+
+/*
  * Events sent from kernel space to the Cerberus
  * user-space agent.
  */
