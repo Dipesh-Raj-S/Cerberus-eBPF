@@ -7,6 +7,7 @@
 
 #include "cerberus/common.h"
 #include "policy.h"
+#include "policy_net.h"
 #include "util.h"
 
 

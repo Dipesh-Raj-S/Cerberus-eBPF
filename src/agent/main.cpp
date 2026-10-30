@@ -17,6 +17,7 @@
 #include "config.h"
 #include "events.h"
 #include "policy.h"
+#include "policy_net.h"
 
 
 /*

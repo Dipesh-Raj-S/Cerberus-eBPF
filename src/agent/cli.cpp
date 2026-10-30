@@ -9,7 +9,9 @@
 
 #include "cerberus/common.h"
 #include "events.h"
+#include "net_cli.h"
 #include "policy.h"
+#include "policy_net.h"
 #include "util.h"
 
 
@@ -435,57 +437,12 @@ static cli_result handle_command(
         else
             policy_remove_allow(maps, comm, rule);
     }
-    else if (command.rfind("block-ip ", 0) == 0)
+    else if (net_cli_command(maps, command))
     {
-        policy_net_add_block(
-            maps,
-            command.substr(9));
-    }
-    else if (command.rfind("unblock-ip ", 0) == 0)
-    {
-        policy_net_remove_block(
-            maps,
-            command.substr(11));
-    }
-    else if (command.rfind("allow-ip ", 0) == 0)
-    {
-        policy_net_add_allow(
-            maps,
-            command.substr(9));
-    }
-    else if (command.rfind("remove-allow-ip ", 0) == 0)
-    {
-        policy_net_remove_allow(
-            maps,
-            command.substr(16));
-    }
-    else if (command.rfind("net-mode ", 0) == 0)
-    {
-        std::string value = trim_text(command.substr(9));
-
-        if (value == "monitor")
-        {
-            policy_net_set_mode(
-                maps.net_mode_fd,
-                CERBERUS_MODE_MONITOR);
-
-            std::cout
-                << "[+] Net mode: MONITOR (report only)\n";
-        }
-        else if (value == "enforce")
-        {
-            policy_net_set_mode(
-                maps.net_mode_fd,
-                CERBERUS_MODE_ENFORCE);
-
-            std::cout
-                << "[+] Net mode: ENFORCE (deny blocked IPs)\n";
-        }
-        else
-        {
-            std::cerr
-                << "[-] Usage: net-mode <monitor|enforce>\n";
-        }
+        /*
+         * A network policy command; the network CLI
+         * module handled it and printed the response.
+         */
     }
     else if (command.rfind("addpath ", 0) == 0)
     {
